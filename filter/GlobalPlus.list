@@ -1,0 +1,24 @@
+
+
+# ---------------------------------------自定义代理------------------------------------------------------
+# SUFFIX：后缀匹配
+# KEYWORD：关键词匹配
+
+# > speedtest
+DOMAIN-SUFFIX,fast.com,PROXY
+DOMAIN-KEYWORD,.fast.,PROXY
+
+# > vip破解
+DOMAIN-SUFFIX,vercel.app,PROXY
+DOMAIN-KEYWORD,.vercel.,PROXY
+
+# > Google Voice
+DOMAIN,lens.l.google.com,PROXY
+
+# > Proton Mail邮箱
+DOMAIN-SUFFIX,proton.me,PROXY
+DOMAIN-KEYWORD,.proton.,PROXY
+
+# > zlibrary图书
+DOMAIN-SUFFIX,zlibrary-global.se,PROXY
+DOMAIN-KEYWORD,zlibrary,PROXY
