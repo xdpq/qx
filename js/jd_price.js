@@ -4,7 +4,7 @@ const body = $response.body;
 const path1 = "serverConfig";
 const path2 = "wareBusiness";
 const path3 = "basicConfig";
-console.log('触发脚本');
+
 if (url.indexOf(path1) != -1) {
     let obj = JSON.parse(body);
     delete obj.serverConfig.httpdns;
@@ -30,16 +30,28 @@ if (url.indexOf(path2) != -1) {
         $done({ body });
         return;
     }
+
+    // 从最后一个 floor 获取商品信息
     const commodity_info = floors[floors.length - 1];
     if (!commodity_info || !commodity_info.data || !commodity_info.data.property) {
         $done({ body });
         return;
     }
     const shareUrl = commodity_info.data.property.shareUrl;
+    if (!shareUrl) {
+        $done({ body });
+        return;
+    }
+
+    // 调用价格查询 API
+    $notify("京东比价", "开始查询", shareUrl);
     request_history_price(shareUrl, function (data) {
         if (data) {
+            $notify("京东比价", "API返回", "ok=" + data.ok);
             const lowerword = adword_obj();
             lowerword.data.ad.textColor = "#fe0000";
+
+            // 找到合适的插入位置
             let bestIndex = 0;
             for (let index = 0; index < floors.length; index++) {
                 const element = floors[index];
@@ -53,17 +65,20 @@ if (url.indexOf(path2) != -1) {
                     }
                 }
             }
+
             if (data.ok == 1 && data.single) {
+                // 成功获取价格数据
                 const lower = lowerMsgs(data.single);
                 const detail = priceSummary(data);
                 const tip = (data.PriceRemark && data.PriceRemark.Tip ? data.PriceRemark.Tip : "") + "（仅供参考）";
                 lowerword.data.ad.adword = `${lower} ${tip}\n${detail}`;
                 floors.splice(bestIndex, 0, lowerword);
-            }
-            if (data.ok == 0 && data.msg && data.msg.length > 0) {
-                lowerword.data.ad.adword = "" + data.msg;
+            } else if (data.ok == 0 && data.msg && data.msg.length > 0) {
+                // API 返回错误信息（如需登录验证）
+                lowerword.data.ad.adword = "⚠️ " + data.msg;
                 floors.splice(bestIndex, 0, lowerword);
             }
+
             $done({ body: JSON.stringify(obj) });
         } else {
             $done({ body });
@@ -175,17 +190,23 @@ function request_history_price(share_url, callback) {
         url: "https://apapia-history.manmanbuy.com/ChromeWidgetServices/WidgetServices.ashx",
         headers: {
             "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 13_1_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 - mmbWebBrowse - ios"
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 13_1_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 - mmbWebBrowse - ios",
+            "Referer": "https://tool.manmanbuy.com/",
+            "Origin": "https://tool.manmanbuy.com"
         },
         body: "methodName=getHistoryTrend&p_url=" + encodeURIComponent(share_url)
     };
+
     $task.fetch(options).then(response => {
         try {
-            callback(JSON.parse(response.body));
+            const result = JSON.parse(response.body);
+            callback(result);
         } catch (e) {
+            // JSON 解析失败，可能是 HTML 错误页面
             callback(null);
         }
     }, reason => {
+        // 网络请求失败
         callback(null);
     });
 }
