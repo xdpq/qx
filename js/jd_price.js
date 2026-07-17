@@ -1,387 +1,329 @@
 /**
- * 京东商品历史价格显示 - QuantumultX 脚本
- * 数据来源：慢慢买历史价格查询
- *
+ * 京东商品历史价格显示 v2 - QuantumultX 脚本
  * 使用方式：
- * 1. 量子X App → 重写 → 添加重写
- * 2. 类型：脚本 | 常规表达式（regex）
- * 3. 匹配地址：^https?://item\.m\.jd\.com/product/\d+\.html
- * 4. 脚本路径：选择本文件
- * 5. 打开mitm，添加 hostname = item.m.jd.com
+ *   重写 → 新增 → 常规表达式
+ *   匹配地址: https://item\.m\.jd\.com/product/\d+\.html
+ *   脚本路径: 选择本文件
+ *   mitm 主机名: item.m.jd.com
  */
 
-const $ = new Env("京东历史价格");
+var $ = new Env("京东历史价格");
 
-// ========== 配置 ==========
-const CONFIG = {
-  // 慢慢买API地址（请自行申请或使用公益接口）
-  apiBase: "https://apapia-history.maijiabang.com/ManmanbuyComHistoryTrend.ashx",
-  // 淘系比价备用地址
-  apiBackup: "https://apapia-history.maijiabang.com/MobileNew.aspx",
-  // 请求超时
-  timeout: 8000,
-};
-
-// ========== 主逻辑 ==========
-async function main() {
-  const url = $request.url;
-  let body = $response.body;
-
-  // 从URL提取SKU ID
-  const skuId = extractSkuId(url);
-  if (!skuId) {
-    $.log("未找到SKU ID，跳过");
-    $.done({});
-    return;
-  }
-
-  $.log(`SKU ID: ${skuId}`);
-
-  // 获取历史价格数据
-  const priceData = await fetchHistoryPrice(skuId);
-  if (!priceData) {
-    $.log("获取历史价格失败");
-    $.done({});
-    return;
-  }
-
-  // 生成注入HTML
-  const infoHtml = buildInfoHtml(priceData);
-
-  // 注入到页面
-  if (body.includes("<body")) {
-    body = body.replace(/<body([^>]*)>/i, `<body$1>${infoHtml}`);
-  } else {
-    body = infoHtml + body;
-  }
-
-  $.done({ body });
-}
-
-// ========== 提取SKU ID ==========
-function extractSkuId(url) {
-  // 方式1: URL路径 /product/100012345.html
-  let match = url.match(/\/product\/(\d+)\.html/);
-  if (match) return match[1];
-
-  // 方式2: query参数 sku=xxx
-  match = url.match(/[?&]sku=(\d+)/);
-  if (match) return match[1];
-
-  // 方式3: query参数 wareId=xxx
-  match = url.match(/[?&]wareId=(\d+)/);
-  if (match) return match[1];
-
-  // 方式4: 从referrer获取（如果有的话）
-  try {
-    const referer = $request.headers?.["Referer"] || $request.headers?.["referer"] || "";
-    match = referer.match(/\/product\/(\d+)\.html/);
-    if (match) return match[1];
-  } catch (e) {}
-
+// ========== 从URL提取SKU ==========
+function getSkuId(url) {
+  var m = url.match(/\/product\/(\d+)\.html/);
+  if (m) return m[1];
+  m = url.match(/[?&](?:sku|wareId)=(\d+)/);
+  if (m) return m[1];
   return null;
 }
 
-// ========== 获取历史价格 ==========
-function fetchHistoryPrice(skuId) {
-  return new Promise((resolve) => {
-    // 构造商品URL
-    const productUrl = `https://item.m.jd.com/product/${skuId}.html`;
+// ========== HTTP请求封装 ==========
+function httpGet(url, headers) {
+  return new Promise(function (resolve, reject) {
+    var opts = {
+      url: url,
+      method: "GET",
+      headers: Object.assign(
+        {
+          "User-Agent":
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+        },
+        headers || {}
+      ),
+    };
+    $.http
+      .get(opts)
+      .then(function (resp) {
+        resolve(resp);
+      })
+      .catch(function (err) {
+        reject(err);
+      });
+  });
+}
 
-    const body = `methodName=getHistoryTrend&p_url=${encodeURIComponent(productUrl)}`;
+// ========== 慢慢买API（主接口）==========
+function fetchManManBuy(skuId) {
+  return new Promise(function (resolve) {
+    var url =
+      "https://apapia-history.maijiabang.com/ManmanbuyComHistoryTrend.ashx";
+    var body =
+      "methodName=getHistoryTrend&p_url=" +
+      encodeURIComponent("https://item.m.jd.com/product/" + skuId + ".html");
 
-    const opts = {
-      url: CONFIG.apiBase,
+    var opts = {
+      url: url,
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
-        "Referer": "https://tool.manmanbuy.com/",
+        "User-Agent":
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+        Referer: "https://tool.manmanbuy.com/",
       },
       body: body,
     };
 
-    $.http.post(opts)
-      .then((resp) => {
-        const data = JSON.parse(resp.body);
-        $.log("API返回:", JSON.stringify(data));
-
-        if (data && data.ok) {
-          resolve(data);
-        } else {
-          $.log("API返回异常");
+    $.http
+      .post(opts)
+      .then(function (resp) {
+        try {
+          var data = JSON.parse(resp.body);
+          $.log("[慢慢买] 返回: " + JSON.stringify(data).substring(0, 300));
+          if (data) resolve(data);
+          else resolve(null);
+        } catch (e) {
+          $.log("[慢慢买] JSON解析失败: " + e.message);
           resolve(null);
         }
       })
-      .catch((err) => {
-        $.log("请求失败:", err.message || err);
+      .catch(function (err) {
+        $.log("[慢慢买] 请求失败: " + (err.message || err));
         resolve(null);
       });
   });
 }
 
-// ========== 构建注入HTML ==========
-function buildInfoHtml(data) {
-  // 解析价格数据
-  let currentPrice = "--";
-  let lowestPrice = "--";
-  let highestPrice = "--";
-  let lowestDate = "--";
-  let avgPrice = "--";
-  let priceDiff = "--";
-  let priceDiffPct = "--";
-  let updateDate = "";
-  let trendEmoji = "";
-  let trendColor = "";
+// ========== 备用接口：直接抓取慢慢买网页价格 ==========
+function fetchFromWeb(skuId) {
+  return new Promise(function (resolve) {
+    var url =
+      "https://tool.manmanbuy.com/history.aspx?url=" +
+      encodeURIComponent("https://item.m.jd.com/product/" + skuId + ".html");
+
+    httpGet(url, { Referer: "https://tool.manmanbuy.com/" })
+      .then(function (resp) {
+        try {
+          var body = resp.body;
+          // 尝试从网页提取价格数据
+          var priceMatch = body.match(
+            /var\s+currentPrice\s*=\s*['"]?([\d.]+)['"]?/
+          );
+          var lowMatch = body.match(
+            /var\s+lowestPrice\s*=\s*['"]?([\d.]+)['"]?/
+          );
+          var highMatch = body.match(
+            /var\s+highestPrice\s*=\s*['"]?([\d.]+)['"]?/
+          );
+
+          if (priceMatch || lowMatch) {
+            resolve({
+              currentPrice: priceMatch ? priceMatch[1] : null,
+              lower: lowMatch ? lowMatch[1] : null,
+              upper: highMatch ? highMatch[1] : null,
+              _source: "web",
+            });
+          } else {
+            $.log("[Web] 未找到价格数据");
+            resolve(null);
+          }
+        } catch (e) {
+          resolve(null);
+        }
+      })
+      .catch(function (err) {
+        $.log("[Web] 请求失败: " + (err.message || err));
+        resolve(null);
+      });
+  });
+}
+
+// ========== 聚合获取价格（多源尝试）==========
+async function getPriceData(skuId) {
+  // 尝试1: 慢慢买API
+  $.log("尝试慢慢买API...");
+  var data = await fetchManManBuy(skuId);
+  if (data && (data.currentPrice || data.price || data.lower)) {
+    $.log("慢慢买API成功");
+    return data;
+  }
+
+  // 尝试2: 网页抓取
+  $.log("尝试网页抓取...");
+  var webData = await fetchFromWeb(skuId);
+  if (webData) {
+    $.log("网页抓取成功");
+    return webData;
+  }
+
+  return null;
+}
+
+// ========== 构建价格卡片HTML ==========
+function buildCard(data) {
+  var cur = "--",
+    low = "--",
+    high = "--",
+    lowDate = "--",
+    avg = "--",
+    trend = "",
+    updateDate = "";
 
   try {
-    // 慢慢买返回的数据结构
-    if (data.currentPrice !== undefined) {
-      currentPrice = Number(data.currentPrice).toFixed(2);
-    } else if (data.price !== undefined) {
-      currentPrice = Number(data.price).toFixed(2);
-    }
+    // 兼容多种API返回格式
+    if (data.currentPrice != null) cur = Number(data.currentPrice).toFixed(2);
+    else if (data.price != null) cur = Number(data.price).toFixed(2);
+    else if (data.nowPrice != null) cur = Number(data.nowPrice).toFixed(2);
 
-    if (data.lower !== undefined) {
-      lowestPrice = Number(data.lower).toFixed(2);
-    }
+    if (data.lower != null) low = Number(data.lower).toFixed(2);
+    else if (data.lowestPrice != null) low = Number(data.lowestPrice).toFixed(2);
 
-    if (data.upper !== undefined) {
-      highestPrice = Number(data.upper).toFixed(2);
-    }
+    if (data.upper != null) high = Number(data.upper).toFixed(2);
+    else if (data.highestPrice != null)
+      high = Number(data.highestPrice).toFixed(2);
 
-    if (data.lowerDate) {
-      lowestDate = formatDate(data.lowerDate);
-    }
+    if (data.lowerDate) lowDate = formatDate(data.lowerDate);
+    if (data.avgPrice != null) avg = Number(data.avgPrice).toFixed(2);
 
-    if (data.avgPrice !== undefined) {
-      avgPrice = Number(data.avgPrice).toFixed(2);
-    }
+    if (data.trend === "up") trend = "📈 涨";
+    else if (data.trend === "down") trend = "📉 跌";
+    else if (data.trend === "flat") trend = "➡️ 平";
 
-    if (data.trend) {
-      trendEmoji = data.trend === "up" ? "📈" : data.trend === "down" ? "📉" : "➡️";
-      trendColor = data.trend === "up" ? "#e74c3c" : data.trend === "down" ? "#27ae60" : "#95a5a6";
-    }
-
-    if (data.date) {
-      updateDate = formatDate(data.date);
-    }
-
-    // 计算价差
-    if (currentPrice !== "--" && lowestPrice !== "--") {
-      const diff = Number(currentPrice) - Number(lowestPrice);
-      priceDiff = diff.toFixed(2);
-      const pct = (diff / Number(lowestPrice)) * 100;
-      priceDiffPct = pct.toFixed(1);
-    }
+    if (data.date) updateDate = formatDate(data.date);
   } catch (e) {
-    $.log("数据解析失败:", e.message);
+    $.log("解析数据失败: " + e.message);
   }
 
-  // 确定当前价格状态
-  let statusText = "";
-  let statusColor = "";
-  if (currentPrice !== "--" && lowestPrice !== "--") {
-    if (Number(currentPrice) <= Number(lowestPrice) * 1.02) {
-      statusText = "历史低价";
-      statusColor = "#e74c3c";
-    } else if (Number(currentPrice) <= Number(lowestPrice) * 1.10) {
-      statusText = "价格较低";
-      statusColor = "#f39c12";
+  // 价格状态判断
+  var status = "";
+  var statusBg = "";
+  if (cur !== "--" && low !== "--") {
+    var diff = Number(cur) - Number(low);
+    var pct = (diff / Number(low)) * 100;
+    if (pct <= 2) {
+      status = "历史最低";
+      statusBg = "#e74c3c";
+    } else if (pct <= 10) {
+      status = "价格较低";
+      statusBg = "#f39c12";
     } else {
-      statusText = "价格偏高";
-      statusColor = "#3498db";
+      status = "价格偏高";
+      statusBg = "#3498db";
     }
   }
 
-  const html = `
-    <div id="historyPriceBox" style="
-      position: fixed;
-      top: 50px;
-      left: 10px;
-      right: 10px;
-      z-index: 99999;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      border-radius: 16px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-      padding: 20px;
-      color: #fff;
-      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif;
-      animation: slideDown 0.3s ease-out;
-    ">
-      <style>
-        @keyframes slideDown {
-          from { opacity: 0; transform: translateY(-20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes pulse {
-          0%, 100% { transform: scale(1); }
-          50% { transform: scale(1.05); }
-        }
-        #historyPriceBox .hp-title {
-          font-size: 11px;
-          color: #8e99a4;
-          letter-spacing: 1px;
-          margin-bottom: 8px;
-        }
-        #historyPriceBox .hp-current {
-          font-size: 28px;
-          font-weight: 700;
-          color: #e74c3c;
-          margin-bottom: 4px;
-        }
-        #historyPriceBox .hp-current::before {
-          content: '¥';
-          font-size: 18px;
-          font-weight: 400;
-        }
-        #historyPriceBox .hp-status {
-          display: inline-block;
-          padding: 3px 10px;
-          border-radius: 20px;
-          font-size: 12px;
-          font-weight: 600;
-          color: #fff;
-          margin-bottom: 12px;
-        }
-        #historyPriceBox .hp-grid {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          margin-bottom: 12px;
-        }
-        #historyPriceBox .hp-item {
-          flex: 1;
-          min-width: 45%;
-          background: rgba(255,255,255,0.06);
-          border-radius: 10px;
-          padding: 10px;
-          text-align: center;
-        }
-        #historyPriceBox .hp-item-label {
-          font-size: 11px;
-          color: #8e99a4;
-          margin-bottom: 4px;
-        }
-        #historyPriceBox .hp-item-value {
-          font-size: 16px;
-          font-weight: 600;
-          color: #ecf0f1;
-        }
-        #historyPriceBox .hp-item-value.red { color: #e74c3c; }
-        #historyPriceBox .hp-item-value.green { color: #2ecc71; }
-        #historyPriceBox .hp-footer {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          border-top: 1px solid rgba(255,255,255,0.08);
-          padding-top: 10px;
-          margin-top: 4px;
-        }
-        #historyPriceBox .hp-close {
-          width: 28px;
-          height: 28px;
-          border-radius: 50%;
-          background: rgba(255,255,255,0.1);
-          border: none;
-          color: #8e99a4;
-          font-size: 16px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        #historyPriceBox .hp-update {
-          font-size: 10px;
-          color: #5d6d7e;
-        }
-        #historyPriceBox .hp-price-tag {
-          font-size: 13px;
-          color: #8e99a4;
-          margin-bottom: 16px;
-        }
-        #historyPriceBox .hp-price-tag span {
-          color: #ecf0f1;
-          font-weight: 600;
-        }
-        #historyPriceBox .hp-bottom-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr 1fr;
-          gap: 8px;
-          margin-bottom: 10px;
-        }
-      </style>
+  var priceTag =
+    cur !== "--" && low !== "--"
+      ? "比最低价 <b style='color:#ff6b6b'>高¥" +
+        (Number(cur) - Number(low)).toFixed(2) +
+        "</b> (" +
+        (((Number(cur) - Number(low)) / Number(low)) * 100).toFixed(1) +
+        "%)"
+      : "";
 
-      <!-- 标题 -->
-      <div class="hp-title">历史价格走势</div>
-
-      <!-- 当前价格 -->
-      <div class="hp-current">${currentPrice}</div>
-
-      <!-- 价格状态标签 -->
-      ${statusText ? `<div class="hp-status" style="background:${statusColor}; animation: pulse 2s infinite;">${statusText}</div>` : ""}
-
-      <!-- 价格区间 -->
-      <div class="hp-price-tag">
-        ${trendEmoji ? `价格趋势 ${trendEmoji} <span style="color:${trendColor}">${trendEmoji}</span>` : ""}
-        ${priceDiff !== "--" ? `比历史最低<span style="color:#e74c3c">高¥${priceDiff}</span> (${priceDiffPct}%)` : ""}
-      </div>
-
-      <!-- 详细数据 -->
-      <div class="hp-bottom-grid">
-        <div class="hp-item">
-          <div class="hp-item-label">历史最低</div>
-          <div class="hp-item-value green">${lowestPrice !== "--" ? "¥" + lowestPrice : "--"}</div>
-          ${lowestDate !== "--" ? `<div class="hp-item-label" style="font-size:10px">${lowestDate}</div>` : ""}
-        </div>
-        <div class="hp-item">
-          <div class="hp-item-label">历史最高</div>
-          <div class="hp-item-value red">${highestPrice !== "--" ? "¥" + highestPrice : "--"}</div>
-        </div>
-        <div class="hp-item">
-          <div class="hp-item-label">均价</div>
-          <div class="hp-item-value">${avgPrice !== "--" ? "¥" + avgPrice : "--"}</div>
-        </div>
-      </div>
-
-      <!-- 底部 -->
-      <div class="hp-footer">
-        <div class="hp-update">数据来源：慢慢买 · ${updateDate || new Date().toLocaleDateString("zh-CN")}</div>
-        <button class="hp-close" onclick="document.getElementById('historyPriceBox').style.display='none'">✕</button>
-      </div>
-    </div>
-  `;
+  var html =
+    '<div id="hp-box" style="position:fixed;top:44px;left:8px;right:8px;z-index:99999;background:#1a1a2e;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.5);padding:16px 18px;color:#fff;font-family:-apple-system,sans-serif;animation:hp-in .3s ease">' +
+    "<style>" +
+    "@keyframes hp-in{from{opacity:0;transform:translateY(-16px)}to{opacity:1;transform:translateY(0)}}" +
+    "</style>" +
+    "<div style='font-size:10px;color:#7f8c8d;letter-spacing:1px;margin-bottom:6px'>历史价格</div>" +
+    "<div style='font-size:30px;font-weight:700;color:#ff6b6b;margin-bottom:2px'>¥" +
+    cur +
+    "</div>" +
+    (status
+      ? "<div style='display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;color:#fff;background:" +
+        statusBg +
+        ";margin-bottom:10px'>" +
+        status +
+        "</div>"
+      : "") +
+    (priceTag
+      ? "<div style='font-size:12px;color:#95a5a6;margin-bottom:12px'>" +
+        priceTag +
+        "</div>"
+      : "<div style='margin-bottom:12px'></div>") +
+    "<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px'>" +
+    "<div style='background:rgba(255,255,255,.06);border-radius:8px;padding:8px;text-align:center'>" +
+    "<div style='font-size:10px;color:#7f8c8d'>历史最低</div>" +
+    "<div style='font-size:14px;font-weight:600;color:#2ecc71'>" +
+    (low !== "--" ? "¥" + low : "--") +
+    "</div>" +
+    (lowDate !== "--"
+      ? "<div style='font-size:9px;color:#5d6d7e'>" + lowDate + "</div>"
+      : "") +
+    "</div>" +
+    "<div style='background:rgba(255,255,255,.06);border-radius:8px;padding:8px;text-align:center'>" +
+    "<div style='font-size:10px;color:#7f8c8d'>历史最高</div>" +
+    "<div style='font-size:14px;font-weight:600;color:#e74c3c'>" +
+    (high !== "--" ? "¥" + high : "--") +
+    "</div></div>" +
+    "<div style='background:rgba(255,255,255,.06);border-radius:8px;padding:8px;text-align:center'>" +
+    "<div style='font-size:10px;color:#7f8c8d'>均价</div>" +
+    "<div style='font-size:14px;font-weight:600;color:#ecf0f1'>" +
+    (avg !== "--" ? "¥" + avg : "--") +
+    "</div></div>" +
+    "</div>" +
+    "<div style='display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,.08);padding-top:8px'>" +
+    "<div style='font-size:9px;color:#5d6d7e'>慢慢买 · " +
+    (updateDate || new Date().toLocaleDateString("zh-CN")) +
+    "</div>" +
+    "<div onclick=\"document.getElementById('hp-box').style.display='none'\" style='width:24px;height:24px;border-radius:50%;background:rgba(255,255,255,.1);text-align:center;line-height:24px;font-size:14px;color:#7f8c8d;cursor:pointer'>✕</div>" +
+    "</div>" +
+    "</div>";
 
   return html;
 }
 
-// ========== 工具函数 ==========
-function formatDate(dateStr) {
-  if (!dateStr) return "--";
-  try {
-    // 支持多种日期格式
-    if (dateStr.length === 8) {
-      // 20231025 → 2023-10-25
-      return `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
-    }
-    if (dateStr.includes("T") || dateStr.includes("-")) {
-      return dateStr.split("T")[0];
-    }
-    return dateStr;
-  } catch (e) {
-    return dateStr;
-  }
+// ========== 日期格式化 ==========
+function formatDate(s) {
+  if (!s) return "--";
+  s = String(s);
+  if (s.length === 8) return s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8);
+  if (s.indexOf("T") > -1) return s.split("T")[0];
+  return s;
 }
 
-// ========== QuantumultX Env ==========
+// ========== 主流程 ==========
+async function main() {
+  var url = $request.url;
+  var body = $response.body || "";
+
+  $.log("请求URL: " + url);
+
+  var skuId = getSkuId(url);
+  if (!skuId) {
+    $.log("未提取到SKU，跳过");
+    $.done({});
+    return;
+  }
+  $.log("SKU: " + skuId);
+
+  var priceData = await getPriceData(skuId);
+  if (!priceData) {
+    $.log("所有数据源均失败，跳过注入");
+    $.done({});
+    return;
+  }
+
+  var cardHtml = buildCard(priceData);
+
+  // 注入到页面
+  if (body.indexOf("<body") !== -1) {
+    body = body.replace(/<body([^>]*)>/i, "<body$1>" + cardHtml);
+  } else if (body.indexOf("</head>") !== -1) {
+    body = body.replace("</head>", cardHtml + "</head>");
+  } else {
+    body = cardHtml + body;
+  }
+
+  $.log("注入成功");
+  $.done({ body: body });
+}
+
+// ========== Env ==========
 function Env(name) {
   this.name = name;
-  this.log = (...args) => console.log(`[${this.name}]`, ...args);
-  this.done = (value) => $done(value);
+  this.log = function () {
+    var args = ["[" + name + "]"];
+    for (var i = 0; i < arguments.length; i++) args.push(arguments[i]);
+    console.log(args.join(" "));
+  };
+  this.done = function (v) {
+    $done(v);
+  };
 }
 
-// 启动
-main().catch((e) => {
-  $.log("脚本异常:", e.message || e);
-  $.done({});
+main().catch(function (e) {
+  console.log("[京东历史价格] 异常: " + (e.message || e));
+  $done({});
 });
