@@ -5,6 +5,7 @@ const path1 = "serverConfig";
 const path2 = "wareBusiness";
 const path3 = "basicConfig";
 
+console.log('触发');
 if (url.indexOf(path1) != -1) {
     let obj = JSON.parse(body);
     delete obj.serverConfig.httpdns;
