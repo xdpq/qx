@@ -1,193 +1,151 @@
+/**
+ * 京东商品页面历史价格显示 - QuantumultX 脚本
+ * 拦截京东商品详情 API，在页面注入历史价格信息
+ */
+
 const url = $request.url;
 const body = $response.body;
 
-const path1 = "serverConfig";
-const path2 = "wareBusiness";
-const path3 = "basicConfig";
+console.log("========== 京东比价脚本触发 ==========");
+console.log("URL: " + url);
 
-console.log('触发');
-if (url.indexOf(path1) != -1) {
-    let obj = JSON.parse(body);
-    delete obj.serverConfig.httpdns;
-    delete obj.serverConfig.dnsvip;
-    delete obj.serverConfig.dnsvip_v6;
-    $done({ body: JSON.stringify(obj) });
+// ========== 1. 禁用 HTTPDNS ==========
+try {
+    if (url.indexOf("serverConfig") != -1) {
+        console.log("[serverConfig] 匹配，禁用 httpdns");
+        let obj = JSON.parse(body);
+        delete obj.serverConfig.httpdns;
+        delete obj.serverConfig.dnsvip;
+        delete obj.serverConfig.dnsvip_v6;
+        $done({ body: JSON.stringify(obj) });
+    }
+} catch (e) {
+    console.log("[serverConfig] 异常: " + e.message);
+    $done({ body });
 }
 
-if (url.indexOf(path3) != -1) {
-    let obj = JSON.parse(body);
-    let JDHttpToolKit = obj.data && obj.data.JDHttpToolKit;
-    if (JDHttpToolKit) {
-        delete obj.data.JDHttpToolKit.httpdns;
-        delete obj.data.JDHttpToolKit.dnsvipV6;
+try {
+    if (url.indexOf("basicConfig") != -1) {
+        console.log("[basicConfig] 匹配，禁用 httpdns");
+        let obj = JSON.parse(body);
+        let kit = obj.data && obj.data.JDHttpToolKit;
+        if (kit) {
+            delete kit.httpdns;
+            delete kit.dnsvipV6;
+        }
+        $done({ body: JSON.stringify(obj) });
     }
-    $done({ body: JSON.stringify(obj) });
+} catch (e) {
+    console.log("[basicConfig] 异常: " + e.message);
+    $done({ body });
 }
 
-if (url.indexOf(path2) != -1) {
-    let obj = JSON.parse(body);
-    const floors = obj.floors;
-    if (!floors || floors.length === 0) {
-        $done({ body });
-        return;
-    }
+// ========== 2. 商品详情页 - 注入历史价格 ==========
+if (url.indexOf("wareBusiness") != -1) {
+    console.log("[wareBusiness] 匹配，开始处理商品详情");
+    try {
+        const obj = JSON.parse(body);
+        const floors = obj.floors;
 
-    // 从最后一个 floor 获取商品信息
-    const commodity_info = floors[floors.length - 1];
-    if (!commodity_info || !commodity_info.data || !commodity_info.data.property) {
-        $done({ body });
-        return;
-    }
-    const shareUrl = commodity_info.data.property.shareUrl;
-    if (!shareUrl) {
-        $done({ body });
-        return;
-    }
+        if (!floors || floors.length === 0) {
+            console.log("[wareBusiness] floors 为空，跳过");
+            $done({ body });
+            return;
+        }
+        console.log("[wareBusiness] floors 数量: " + floors.length);
 
-    // 调用价格查询 API
-    $notify("京东比价", "开始查询", shareUrl);
-    request_history_price(shareUrl, function (data) {
-        if (data) {
-            $notify("京东比价", "API返回", "ok=" + data.ok);
-            const lowerword = adword_obj();
-            lowerword.data.ad.textColor = "#fe0000";
+        // 尝试多个位置获取商品 URL
+        let shareUrl = null;
 
-            // 找到合适的插入位置
-            let bestIndex = 0;
-            for (let index = 0; index < floors.length; index++) {
-                const element = floors[index];
-                if (element.mId == lowerword.mId) {
-                    bestIndex = index + 1;
-                    break;
-                } else {
-                    if (element.sortId > lowerword.sortId) {
-                        bestIndex = index;
+        // 方法1: 从最后一个 floor 的 property 中获取
+        try {
+            const lastFloor = floors[floors.length - 1];
+            if (lastFloor && lastFloor.data && lastFloor.data.property) {
+                shareUrl = lastFloor.data.property.shareUrl;
+                console.log("[wareBusiness] 方法1获取 shareUrl: " + shareUrl);
+            }
+        } catch (e) {
+            console.log("[wareBusiness] 方法1异常: " + e.message);
+        }
+
+        // 方法2: 遍历所有 floor 查找
+        if (!shareUrl) {
+            console.log("[wareBusiness] 方法1失败，尝试遍历所有 floor");
+            for (let i = floors.length - 1; i >= 0; i--) {
+                try {
+                    const f = floors[i];
+                    if (f && f.data && f.data.property && f.data.property.shareUrl) {
+                        shareUrl = f.data.property.shareUrl;
+                        console.log("[wareBusiness] 方法2获取 shareUrl: " + shareUrl);
                         break;
                     }
-                }
+                } catch (e) {}
             }
+        }
 
-            if (data.ok == 1 && data.single) {
-                // 成功获取价格数据
-                const lower = lowerMsgs(data.single);
-                const detail = priceSummary(data);
-                const tip = (data.PriceRemark && data.PriceRemark.Tip ? data.PriceRemark.Tip : "") + "（仅供参考）";
-                lowerword.data.ad.adword = `${lower} ${tip}\n${detail}`;
-                floors.splice(bestIndex, 0, lowerword);
-            } else if (data.ok == 0 && data.msg && data.msg.length > 0) {
-                // API 返回错误信息（如需登录验证）
-                lowerword.data.ad.adword = "⚠️ " + data.msg;
-                floors.splice(bestIndex, 0, lowerword);
-            }
-
-            $done({ body: JSON.stringify(obj) });
-        } else {
+        if (!shareUrl) {
+            console.log("[wareBusiness] 未找到 shareUrl，跳过");
             $done({ body });
+            return;
         }
-    });
-}
 
-function lowerMsgs(data) {
-    const lower = data.lowerPriceyh;
-    const lowerDate = dateFormat(data.lowerDateyh);
-    const lowerMsg = "历史最低价格：¥" + String(lower) + ` (${lowerDate}) `;
-    return lowerMsg;
-}
+        console.log("[wareBusiness] shareUrl: " + shareUrl);
+        console.log("[wareBusiness] 开始请求价格 API...");
 
-function priceSummary(data) {
-    let summary = "";
-    let listPriceDetail = data.PriceRemark && data.PriceRemark.ListPriceDetail ? data.PriceRemark.ListPriceDetail.slice(0, 4) : [];
-    let list = listPriceDetail.concat(historySummary(data.single));
-    list.forEach((item) => {
-        if (item.Name == "双11价格") {
-            item.Name = "双十一价格";
-        } else if (item.Name == "618价格") {
-            item.Name = "六一八价格";
-        }
-        summary += `\n${item.Name}${getSpace(8)}${item.Price}${getSpace(8)}${item.Date}${getSpace(8)}${item.Difference}`;
-    });
-    return summary;
-}
+        // 调用价格查询 API
+        fetchPriceHistory(shareUrl, function (data) {
+            if (!data) {
+                console.log("[wareBusiness] API 返回 null，跳过");
+                $done({ body });
+                return;
+            }
 
-function historySummary(single) {
-    const rexMatch = /\[.*?\]/g;
-    const rexExec = /\[(.*),(.*),"(.*)".*\]/;
-    let currentPrice, lowest30, lowest90, lowest180, lowest360;
-    let list = single.jiagequshiyh.match(rexMatch);
-    if (!list) return [];
-    list = list.reverse().slice(0, 360);
-    list.forEach((item, index) => {
-        if (item.length > 0) {
-            const result = rexExec.exec(item);
-            if (!result) return;
-            const dateUTC = new Date(parseInt(result[1]));
-            const date = dateUTC.format("yyyy-MM-dd");
-            let price = parseFloat(result[2]);
-            if (index == 0) {
-                currentPrice = price;
-                lowest30 = { Name: "三十天最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
-                lowest90 = { Name: "九十天最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
-                lowest180 = { Name: "一百八最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
-                lowest360 = { Name: "三百六最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
+            console.log("[wareBusiness] API 返回 ok=" + data.ok);
+            if (data.msg) {
+                console.log("[wareBusiness] API msg: " + data.msg);
             }
-            if (index < 30 && price < lowest30.price) {
-                lowest30.price = price;
-                lowest30.Price = `¥${String(price)}`;
-                lowest30.Date = date;
-                lowest30.Difference = difference(currentPrice, price);
-            }
-            if (index < 90 && price < lowest90.price) {
-                lowest90.price = price;
-                lowest90.Price = `¥${String(price)}`;
-                lowest90.Date = date;
-                lowest90.Difference = difference(currentPrice, price);
-            }
-            if (index < 180 && price < lowest180.price) {
-                lowest180.price = price;
-                lowest180.Price = `¥${String(price)}`;
-                lowest180.Date = date;
-                lowest180.Difference = difference(currentPrice, price);
-            }
-            if (index < 360 && price < lowest360.price) {
-                lowest360.price = price;
-                lowest360.Price = `¥${String(price)}`;
-                lowest360.Date = date;
-                lowest360.Difference = difference(currentPrice, price);
-            }
-        }
-    });
-    return [lowest30, lowest90, lowest180, lowest360];
-}
 
-function difference(currentPrice, price) {
-    let diff = sub(currentPrice, price);
-    if (diff == 0) {
-        return "-";
-    } else {
-        return `${diff > 0 ? "↑" : "↓"}${String(Math.abs(diff))}`;
+            try {
+                const lowerword = buildAdword();
+                lowerword.data.ad.textColor = "#fe0000";
+
+                // 找插入位置
+                let insertIdx = findInsertIndex(floors, lowerword);
+                console.log("[wareBusiness] 插入位置: " + insertIdx);
+
+                if (data.ok == 1 && data.single) {
+                    const lower = formatLowerPrice(data.single);
+                    const detail = formatPriceSummary(data);
+                    const tip = (data.PriceRemark && data.PriceRemark.Tip ? data.PriceRemark.Tip : "") + "（仅供参考）";
+                    lowerword.data.ad.adword = lower + " " + tip + "\n" + detail;
+                    console.log("[wareBusiness] 注入内容: " + lowerword.data.ad.adword);
+                    floors.splice(insertIdx, 0, lowerword);
+                    $done({ body: JSON.stringify(obj) });
+                } else if (data.ok == 0 && data.msg) {
+                    lowerword.data.ad.adword = data.msg;
+                    console.log("[wareBusiness] 注入错误信息: " + data.msg);
+                    floors.splice(insertIdx, 0, lowerword);
+                    $done({ body: JSON.stringify(obj) });
+                } else {
+                    console.log("[wareBusiness] 数据格式异常，跳过注入");
+                    $done({ body });
+                }
+            } catch (e) {
+                console.log("[wareBusiness] 注入异常: " + e.message);
+                $done({ body });
+            }
+        });
+
+    } catch (e) {
+        console.log("[wareBusiness] 解析异常: " + e.message);
+        $done({ body });
     }
 }
 
-function sub(arg1, arg2) {
-    return add(arg1, -Number(arg2), arguments[2]);
-}
+// ========== 工具函数 ==========
 
-function add(arg1, arg2) {
-    arg1 = arg1.toString();
-    arg2 = arg2.toString();
-    var arg1Arr = arg1.split(".");
-    var arg2Arr = arg2.split(".");
-    var d1 = arg1Arr.length == 2 ? arg1Arr[1] : "";
-    var d2 = arg2Arr.length == 2 ? arg2Arr[1] : "";
-    var maxLen = Math.max(d1.length, d2.length);
-    var m = Math.pow(10, maxLen);
-    var result = Number(((arg1 * m + arg2 * m) / m).toFixed(maxLen));
-    var d = arguments[2];
-    return typeof d === "number" ? Number((result).toFixed(d)) : result;
-}
-
-function request_history_price(share_url, callback) {
-    const options = {
+function fetchPriceHistory(shareUrl, callback) {
+    const opts = {
         url: "https://apapia-history.manmanbuy.com/ChromeWidgetServices/WidgetServices.ashx",
         headers: {
             "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
@@ -195,46 +153,136 @@ function request_history_price(share_url, callback) {
             "Referer": "https://tool.manmanbuy.com/",
             "Origin": "https://tool.manmanbuy.com"
         },
-        body: "methodName=getHistoryTrend&p_url=" + encodeURIComponent(share_url)
+        body: "methodName=getHistoryTrend&p_url=" + encodeURIComponent(shareUrl)
     };
 
-    $task.fetch(options).then(response => {
+    console.log("[API] 请求价格接口...");
+    $task.fetch(opts).then(function (resp) {
+        console.log("[API] 响应状态码: " + resp.statusCode);
+        console.log("[API] 响应内容: " + (resp.body ? resp.body.substring(0, 200) : "空"));
         try {
-            const result = JSON.parse(response.body);
-            callback(result);
+            callback(JSON.parse(resp.body));
         } catch (e) {
-            // JSON 解析失败，可能是 HTML 错误页面
+            console.log("[API] JSON 解析失败: " + e.message);
             callback(null);
         }
-    }, reason => {
-        // 网络请求失败
+    }, function (err) {
+        console.log("[API] 请求失败: " + JSON.stringify(err));
         callback(null);
     });
 }
 
-function dateFormat(cellval) {
-    if (!cellval) return "未知";
-    const date = new Date(parseInt(cellval.replace("/Date(", "").replace(")/", ""), 10));
-    const month = date.getMonth() + 1 < 10 ? "0" + (date.getMonth() + 1) : date.getMonth() + 1;
-    const currentDate = date.getDate() < 10 ? "0" + date.getDate() : date.getDate();
-    return date.getFullYear() + "-" + month + "-" + currentDate;
-}
-
-function getSpace(length) {
-    let blank = "";
-    for (let index = 0; index < length; index++) {
-        blank += " ";
+function findInsertIndex(floors, lowerword) {
+    let idx = 0;
+    for (let i = 0; i < floors.length; i++) {
+        const el = floors[i];
+        if (el.mId == lowerword.mId) {
+            idx = i + 1;
+            break;
+        } else if (el.sortId > lowerword.sortId) {
+            idx = i;
+            break;
+        }
     }
-    return blank;
+    return idx;
 }
 
-function adword_obj() {
+function formatLowerPrice(single) {
+    const price = single.lowerPriceyh;
+    const date = formatJsonDate(single.lowerDateyh);
+    return "历史最低价：¥" + String(price) + " (" + date + ")";
+}
+
+function formatPriceSummary(data) {
+    let result = "";
+    let listItems = data.PriceRemark && data.PriceRemark.ListPriceDetail
+        ? data.PriceRemark.ListPriceDetail.slice(0, 4)
+        : [];
+    let allItems = listItems.concat(calcPeriodLows(data.single));
+
+    for (let i = 0; i < allItems.length; i++) {
+        const item = allItems[i];
+        if (item.Name == "双11价格") item.Name = "双十一价格";
+        else if (item.Name == "618价格") item.Name = "六一八价格";
+        result += "\n" + item.Name + pad(8) + item.Price + pad(8) + item.Date + pad(8) + item.Difference;
+    }
+    return result;
+}
+
+function calcPeriodLows(single) {
+    const pattern = /\[.*?\]/g;
+    const extract = /\[(.*),(.*),"(.*)".*\]/;
+    let current, low30, low90, low180, low360;
+    let matches = single.jiagequshiyh.match(pattern);
+    if (!matches) return [];
+
+    matches = matches.reverse().slice(0, 360);
+    for (let i = 0; i < matches.length; i++) {
+        const m = matches[i];
+        if (m.length == 0) continue;
+        const r = extract.exec(m);
+        if (!r) continue;
+        const dt = fmtDate(new Date(parseInt(r[1])));
+        const p = parseFloat(r[2]);
+
+        if (i == 0) {
+            current = p;
+            low30  = { Name: "三十天最低", Price: "¥" + p, Date: dt, Difference: calcDiff(current, p), price: p };
+            low90  = { Name: "九十天最低", Price: "¥" + p, Date: dt, Difference: calcDiff(current, p), price: p };
+            low180 = { Name: "一百八最低", Price: "¥" + p, Date: dt, Difference: calcDiff(current, p), price: p };
+            low360 = { Name: "三百六最低", Price: "¥" + p, Date: dt, Difference: calcDiff(current, p), price: p };
+        }
+        if (i < 30  && p < low30.price)  { low30.price = p;  low30.Price = "¥" + p;  low30.Date = dt;  low30.Difference = calcDiff(current, p); }
+        if (i < 90  && p < low90.price)  { low90.price = p;  low90.Price = "¥" + p;  low90.Date = dt;  low90.Difference = calcDiff(current, p); }
+        if (i < 180 && p < low180.price) { low180.price = p; low180.Price = "¥" + p; low180.Date = dt; low180.Difference = calcDiff(current, p); }
+        if (i < 360 && p < low360.price) { low360.price = p; low360.Price = "¥" + p; low360.Date = dt; low360.Difference = calcDiff(current, p); }
+    }
+    return [low30, low90, low180, low360];
+}
+
+function calcDiff(cur, low) {
+    const d = floatSub(cur, low);
+    if (d == 0) return "-";
+    return (d > 0 ? "↑" : "↓") + String(Math.abs(d));
+}
+
+function floatSub(a, b) {
+    return floatAdd(a, -Number(b));
+}
+
+function floatAdd(a, b) {
+    a = a.toString(); b = b.toString();
+    var A = a.split("."), B = b.split(".");
+    var d1 = A.length == 2 ? A[1] : "", d2 = B.length == 2 ? B[1] : "";
+    var max = Math.max(d1.length, d2.length);
+    var m = Math.pow(10, max);
+    return Number(((a * m + b * m) / m).toFixed(max));
+}
+
+function formatJsonDate(val) {
+    if (!val) return "未知";
+    const d = new Date(parseInt(val.replace("/Date(", "").replace(")/", ""), 10));
+    const M = d.getMonth() + 1 < 10 ? "0" + (d.getMonth() + 1) : d.getMonth() + 1;
+    const D = d.getDate() < 10 ? "0" + d.getDate() : d.getDate();
+    return d.getFullYear() + "-" + M + "-" + D;
+}
+
+function fmtDate(d) {
+    const M = d.getMonth() + 1 < 10 ? "0" + (d.getMonth() + 1) : d.getMonth() + 1;
+    const D = d.getDate() < 10 ? "0" + d.getDate() : d.getDate();
+    return d.getFullYear() + "-" + M + "-" + D;
+}
+
+function pad(n) {
+    let s = "";
+    for (let i = 0; i < n; i++) s += " ";
+    return s;
+}
+
+function buildAdword() {
     return {
         "bId": "eCustom_flo_199",
-        "cf": {
-            "bgc": "#ffffff",
-            "spl": "empty"
-        },
+        "cf": { "bgc": "#ffffff", "spl": "empty" },
         "data": {
             "ad": {
                 "adword": "",
@@ -252,30 +300,3 @@ function adword_obj() {
         "sortId": 13
     };
 }
-
-Date.prototype.format = function (fmt) {
-    var o = {
-        "y+": this.getFullYear(),
-        "M+": this.getMonth() + 1,
-        "d+": this.getDate(),
-        "h+": this.getHours(),
-        "m+": this.getMinutes(),
-        "s+": this.getSeconds(),
-        "q+": Math.floor((this.getMonth() + 3) / 3),
-        "S+": this.getMilliseconds()
-    };
-    for (var k in o) {
-        if (new RegExp("(" + k + ")").test(fmt)) {
-            if (k == "y+") {
-                fmt = fmt.replace(RegExp.$1, ("" + o[k]).substr(4 - RegExp.$1.length));
-            } else if (k == "S+") {
-                var lens = RegExp.$1.length;
-                lens = lens == 1 ? 3 : lens;
-                fmt = fmt.replace(RegExp.$1, ("00" + o[k]).substr(("" + o[k]).length - 1, lens));
-            } else {
-                fmt = fmt.replace(RegExp.$1, (RegExp.$1.length == 1) ? (o[k]) : (("00" + o[k]).substr(("" + o[k]).length)));
-            }
-        }
-    }
-    return fmt;
-};
