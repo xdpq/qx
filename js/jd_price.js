@@ -1,52 +1,41 @@
 /**
- * 调试版 - 显示完整的请求信息
+ * 调试版2 - 捕获所有JD API请求
  */
 
-const $ = new Env("京东调试");
+const $ = new Env("JD调试");
 
 (async () => {
     const url = $request.url;
     const body = $request.body || "";
     
-    // 显示完整信息
-    let info = "=== URL ===\n" + url + "\n\n=== Body ===\n" + body.substring(0, 800);
+    // 提取functionId
+    const funcMatch = url.match(/functionId=([^&]+)/);
+    const funcId = funcMatch ? funcMatch[1] : "未知";
     
-    // 尝试找所有数字ID
-    const ids = [];
+    // 收集所有数字
+    const allNums = (url + body).match(/\d{6,}/g) || [];
     
-    // 从URL找
-    const urlNums = url.match(/\d{5,}/g);
-    if (urlNums) ids.push(...urlNums.map(n => "URL: " + n));
+    let info = `函数: ${funcId}\n\n`;
+    info += `URL:\n${url.substring(0, 300)}\n\n`;
     
-    // 从body找
-    const bodyNums = body.match(/\d{5,}/g);
-    if (bodyNums) ids.push(...bodyNums.map(n => "Body: " + n));
-    
-    // 尝试JSON解析
-    let jsonData = "";
-    try {
-        const json = JSON.parse(body);
-        jsonData = "\n\n=== JSON Keys ===\n" + Object.keys(json).join(", ");
-        
-        // 查找可能的SKU字段
-        for (const key of Object.keys(json)) {
-            if (key.toLowerCase().includes("sku") || 
-                key.toLowerCase().includes("ware") || 
-                key.toLowerCase().includes("product") ||
-                key.toLowerCase().includes("id")) {
-                jsonData += `\n${key}: ${json[key]}`;
-            }
-        }
-    } catch(e) {
-        jsonData = "\n\n=== 非JSON格式 ===";
+    if (body) {
+        info += `Body:\n${body.substring(0, 300)}\n\n`;
     }
     
-    let msg = info + jsonData + "\n\n=== 找到的ID ===\n" + ids.join("\n");
+    info += `可能的ID:\n${allNums.slice(0, 10).join("\n")}`;
     
-    // 通知显示
-    $.notify("京东调试", msg.substring(0, 1000));
+    // 只在可能是商品请求时显示通知
+    if (url.includes("wareId") || url.includes("skuId") || 
+        body.includes("skuId") || body.includes("wareId") ||
+        funcId.includes("ware") || funcId.includes("product") || 
+        funcId.includes("sku") || funcId.includes("detail")) {
+        $.notify("✅ 疑似商品请求", info.substring(0, 500));
+    }
     
-    console.log(msg);
+    // 始终输出到控制台
+    console.log("=== JD API ===");
+    console.log(info);
+    
     $.done({});
 })();
 
