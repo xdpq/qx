@@ -1,49 +1,259 @@
-/**
- * 调试版 - 显示所有JD API请求的详细信息
- */
+const url = $request.url;
+const body = $response.body;
 
-const $ = new Env("JD调试");
+const path1 = "serverConfig";
+const path2 = "wareBusiness";
+const path3 = "basicConfig";
 
-(async () => {
-    const url = $request.url;
-    const body = $request.body || "";
-    
-    // 提取functionId
-    const funcMatch = url.match(/functionId=([^&]+)/);
-    const funcId = funcMatch ? funcMatch[1] : "未知";
-    
-    // 找所有数字
-    const allNums = (url + body).match(/\d{6,}/g) || [];
-    
-    let info = [
-        `函数: ${funcId}`,
-        ``,
-        `URL完整:`,
-        url,
-        ``,
-        `Body完整:`,
-        body || "(空)",
-        ``,
-        `找到的数字ID:`,
-        ...allNums.slice(0, 15)
-    ].join("\n");
-    
-    console.log("========== JD API ==========");
-    console.log(info);
-    console.log("============================");
-    
-    // 只在可能是商品时弹通知
-    if (allNums.some(n => n.length >= 8 && n.length <= 12)) {
-        $.notify("找到长数字ID", info.substring(0, 800));
-    }
-    
-    $.done({});
-})();
-
-function Env(n){
-    this.name=n;
-    this.request=typeof $request!=="undefined"?$request:{};
-    this.response=typeof $response!=="undefined"?$response:{};
-    this.notify=(t,s,b)=>{if(typeof $notify!=="undefined")$notify(t,s,b||"")};
-    this.done=v=>{if(typeof $done!=="undefined")$done(v||{})};
+if (url.indexOf(path1) != -1) {
+    let obj = JSON.parse(body);
+    delete obj.serverConfig.httpdns;
+    delete obj.serverConfig.dnsvip;
+    delete obj.serverConfig.dnsvip_v6;
+    $done({ body: JSON.stringify(obj) });
 }
+
+if (url.indexOf(path3) != -1) {
+    let obj = JSON.parse(body);
+    let JDHttpToolKit = obj.data && obj.data.JDHttpToolKit;
+    if (JDHttpToolKit) {
+        delete obj.data.JDHttpToolKit.httpdns;
+        delete obj.data.JDHttpToolKit.dnsvipV6;
+    }
+    $done({ body: JSON.stringify(obj) });
+}
+
+if (url.indexOf(path2) != -1) {
+    let obj = JSON.parse(body);
+    const floors = obj.floors;
+    if (!floors || floors.length === 0) {
+        $done({ body });
+        return;
+    }
+    const commodity_info = floors[floors.length - 1];
+    if (!commodity_info || !commodity_info.data || !commodity_info.data.property) {
+        $done({ body });
+        return;
+    }
+    const shareUrl = commodity_info.data.property.shareUrl;
+    request_history_price(shareUrl, function (data) {
+        if (data) {
+            const lowerword = adword_obj();
+            lowerword.data.ad.textColor = "#fe0000";
+            let bestIndex = 0;
+            for (let index = 0; index < floors.length; index++) {
+                const element = floors[index];
+                if (element.mId == lowerword.mId) {
+                    bestIndex = index + 1;
+                    break;
+                } else {
+                    if (element.sortId > lowerword.sortId) {
+                        bestIndex = index;
+                        break;
+                    }
+                }
+            }
+            if (data.ok == 1 && data.single) {
+                const lower = lowerMsgs(data.single);
+                const detail = priceSummary(data);
+                const tip = (data.PriceRemark && data.PriceRemark.Tip ? data.PriceRemark.Tip : "") + "（仅供参考）";
+                lowerword.data.ad.adword = `${lower} ${tip}\n${detail}`;
+                floors.splice(bestIndex, 0, lowerword);
+            }
+            if (data.ok == 0 && data.msg && data.msg.length > 0) {
+                lowerword.data.ad.adword = "" + data.msg;
+                floors.splice(bestIndex, 0, lowerword);
+            }
+            $done({ body: JSON.stringify(obj) });
+        } else {
+            $done({ body });
+        }
+    });
+}
+
+function lowerMsgs(data) {
+    const lower = data.lowerPriceyh;
+    const lowerDate = dateFormat(data.lowerDateyh);
+    const lowerMsg = "历史最低价格：¥" + String(lower) + ` (${lowerDate}) `;
+    return lowerMsg;
+}
+
+function priceSummary(data) {
+    let summary = "";
+    let listPriceDetail = data.PriceRemark && data.PriceRemark.ListPriceDetail ? data.PriceRemark.ListPriceDetail.slice(0, 4) : [];
+    let list = listPriceDetail.concat(historySummary(data.single));
+    list.forEach((item) => {
+        if (item.Name == "双11价格") {
+            item.Name = "双十一价格";
+        } else if (item.Name == "618价格") {
+            item.Name = "六一八价格";
+        }
+        summary += `\n${item.Name}${getSpace(8)}${item.Price}${getSpace(8)}${item.Date}${getSpace(8)}${item.Difference}`;
+    });
+    return summary;
+}
+
+function historySummary(single) {
+    const rexMatch = /\[.*?\]/g;
+    const rexExec = /\[(.*),(.*),"(.*)".*\]/;
+    let currentPrice, lowest30, lowest90, lowest180, lowest360;
+    let list = single.jiagequshiyh.match(rexMatch);
+    if (!list) return [];
+    list = list.reverse().slice(0, 360);
+    list.forEach((item, index) => {
+        if (item.length > 0) {
+            const result = rexExec.exec(item);
+            if (!result) return;
+            const dateUTC = new Date(parseInt(result[1]));
+            const date = dateUTC.format("yyyy-MM-dd");
+            let price = parseFloat(result[2]);
+            if (index == 0) {
+                currentPrice = price;
+                lowest30 = { Name: "三十天最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
+                lowest90 = { Name: "九十天最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
+                lowest180 = { Name: "一百八最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
+                lowest360 = { Name: "三百六最低", Price: `¥${String(price)}`, Date: date, Difference: difference(currentPrice, price), price };
+            }
+            if (index < 30 && price < lowest30.price) {
+                lowest30.price = price;
+                lowest30.Price = `¥${String(price)}`;
+                lowest30.Date = date;
+                lowest30.Difference = difference(currentPrice, price);
+            }
+            if (index < 90 && price < lowest90.price) {
+                lowest90.price = price;
+                lowest90.Price = `¥${String(price)}`;
+                lowest90.Date = date;
+                lowest90.Difference = difference(currentPrice, price);
+            }
+            if (index < 180 && price < lowest180.price) {
+                lowest180.price = price;
+                lowest180.Price = `¥${String(price)}`;
+                lowest180.Date = date;
+                lowest180.Difference = difference(currentPrice, price);
+            }
+            if (index < 360 && price < lowest360.price) {
+                lowest360.price = price;
+                lowest360.Price = `¥${String(price)}`;
+                lowest360.Date = date;
+                lowest360.Difference = difference(currentPrice, price);
+            }
+        }
+    });
+    return [lowest30, lowest90, lowest180, lowest360];
+}
+
+function difference(currentPrice, price) {
+    let diff = sub(currentPrice, price);
+    if (diff == 0) {
+        return "-";
+    } else {
+        return `${diff > 0 ? "↑" : "↓"}${String(Math.abs(diff))}`;
+    }
+}
+
+function sub(arg1, arg2) {
+    return add(arg1, -Number(arg2), arguments[2]);
+}
+
+function add(arg1, arg2) {
+    arg1 = arg1.toString();
+    arg2 = arg2.toString();
+    var arg1Arr = arg1.split(".");
+    var arg2Arr = arg2.split(".");
+    var d1 = arg1Arr.length == 2 ? arg1Arr[1] : "";
+    var d2 = arg2Arr.length == 2 ? arg2Arr[1] : "";
+    var maxLen = Math.max(d1.length, d2.length);
+    var m = Math.pow(10, maxLen);
+    var result = Number(((arg1 * m + arg2 * m) / m).toFixed(maxLen));
+    var d = arguments[2];
+    return typeof d === "number" ? Number((result).toFixed(d)) : result;
+}
+
+function request_history_price(share_url, callback) {
+    const options = {
+        url: "https://apapia-history.manmanbuy.com/ChromeWidgetServices/WidgetServices.ashx",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 13_1_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 - mmbWebBrowse - ios"
+        },
+        body: "methodName=getHistoryTrend&p_url=" + encodeURIComponent(share_url)
+    };
+    $task.fetch(options).then(response => {
+        try {
+            callback(JSON.parse(response.body));
+        } catch (e) {
+            callback(null);
+        }
+    }, reason => {
+        callback(null);
+    });
+}
+
+function dateFormat(cellval) {
+    if (!cellval) return "未知";
+    const date = new Date(parseInt(cellval.replace("/Date(", "").replace(")/", ""), 10));
+    const month = date.getMonth() + 1 < 10 ? "0" + (date.getMonth() + 1) : date.getMonth() + 1;
+    const currentDate = date.getDate() < 10 ? "0" + date.getDate() : date.getDate();
+    return date.getFullYear() + "-" + month + "-" + currentDate;
+}
+
+function getSpace(length) {
+    let blank = "";
+    for (let index = 0; index < length; index++) {
+        blank += " ";
+    }
+    return blank;
+}
+
+function adword_obj() {
+    return {
+        "bId": "eCustom_flo_199",
+        "cf": {
+            "bgc": "#ffffff",
+            "spl": "empty"
+        },
+        "data": {
+            "ad": {
+                "adword": "",
+                "textColor": "#8C8C8C",
+                "color": "#f23030",
+                "newALContent": true,
+                "hasFold": true,
+                "class": "com.jd.app.server.warecoresoa.domain.AdWordInfo.AdWordInfo",
+                "adLinkContent": "",
+                "adLink": ""
+            }
+        },
+        "mId": "bpAdword",
+        "refId": "eAdword_0000000028",
+        "sortId": 13
+    };
+}
+
+Date.prototype.format = function (fmt) {
+    var o = {
+        "y+": this.getFullYear(),
+        "M+": this.getMonth() + 1,
+        "d+": this.getDate(),
+        "h+": this.getHours(),
+        "m+": this.getMinutes(),
+        "s+": this.getSeconds(),
+        "q+": Math.floor((this.getMonth() + 3) / 3),
+        "S+": this.getMilliseconds()
+    };
+    for (var k in o) {
+        if (new RegExp("(" + k + ")").test(fmt)) {
+            if (k == "y+") {
+                fmt = fmt.replace(RegExp.$1, ("" + o[k]).substr(4 - RegExp.$1.length));
+            } else if (k == "S+") {
+                var lens = RegExp.$1.length;
+                lens = lens == 1 ? 3 : lens;
+                fmt = fmt.replace(RegExp.$1, ("00" + o[k]).substr(("" + o[k]).length - 1, lens));
+            } else {
+                fmt = fmt.replace(RegExp.$1, (RegExp.$1.length == 1) ? (o[k]) : (("00" + o[k]).substr(("" + o[k]).length)));
+            }
+        }
+    }
+    return fmt;
+};
