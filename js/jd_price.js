@@ -8,6 +8,10 @@
 const title = "QX脚本测试";
 const body = "如果你看到这条通知，说明脚本已成功加载！\n时间: " + new Date().toLocaleString();
 
-console.log(title + ": " + body);
+if (typeof $notify !== "undefined") {
+    $notify(title, "", body);
+} else {
+    console.log(title + ": " + body);
+}
 
 $done({});
